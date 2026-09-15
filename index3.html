@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>iREd 智慧體溫監測站</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background-color: #f0f2f5;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 90vh;
+    }
+    .card {
+      background: white;
+      padding: 35px;
+      border-radius: 16px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+      text-align: center;
+      width: 100%;
+      max-width: 600px;
+    }
+    .btn {
+      padding: 14px 28px;
+      font-size: 18px;
+      cursor: pointer;
+      border-radius: 8px;
+      border: none;
+      background-color: #007bff;
+      color: white;
+      font-weight: bold;
+      transition: background 0.2s;
+    }
+    .btn:hover { background-color: #0056b3; }
+    .btn-back {
+      background-color: #6c757d;
+      padding: 12px 24px;
+      font-size: 16px;
+      margin-top: 15px;
+    }
+    .btn-back:hover { background-color: #5a6268; }
+
+    #tempDisplay {
+      font-size: 88px;
+      font-weight: bold;
+      color: #ccc;
+      margin: 25px 0;
+      transition: color 0.3s;
+    }
+
+    /* 體溫異常警報與地圖視窗 (預設隱藏) */
+    #alertView {
+      display: none;
+      text-align: center;
+    }
+    .alert-box {
+      background-color: #ffeef0;
+      border: 2px solid #ffccd2;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .alert-message {
+      font-size: 20px;
+      font-weight: bold;
+      line-height: 1.6;
+      color: #d9534f;
+    }
+
+    /* 地圖框架 */
+    #mapFrame {
+      width: 100%;
+      height: 360px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 主畫面：體溫量測 -->
+  <div class="card" id="mainView">
+    <h2>iREd 智慧體溫監測站</h2>
+    <div id="status" style="color: #666; margin-bottom: 20px;">系統就緒，請點擊按鈕開啟監測</div>
+    
+    <button class="btn" id="btnStart">啟動監測站 (連接體溫計)</button>
+
+    <div id="tempDisplay">--.- °C</div>
+    <div style="color: #888;">對準額頭按下測量鍵，聽見嗶聲後自動判讀</div>
+  </div>
+
+  <!-- 異常警報與地圖畫面 -->
+  <div class="card" id="alertView">
+    <div class="alert-box">
+      <div class="alert-message">
+        你的體溫高於37.8度，現給你一塊退熱貼，並及早到附近的醫院或診所就診
+      </div>
+    </div>
+
+    <!-- 嵌入 Google 地圖 -->
+    <iframe id="mapFrame" src="" loading="lazy"></iframe>
+
+    <div>
+      <button class="btn btn-back" id="btnBack">返回主畫面</button>
+    </div>
+  </div>
+
+  <script>
+    // --- 系統設定參數 ---
+    // 請將此處改為 ESP32 在 Serial Monitor 印出的 Wi-Fi IP 位址
+    const ESP32_IP = "192.168.12.125"; 
+
+    // AOJ-20A 專用藍牙 UUID
+    const SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb";
+    const CHARACTERISTIC_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb";
+
+    const mainView = document.getElementById('mainView');
+    const alertView = document.getElementById('alertView');
+    const statusDiv = document.getElementById('status');
+    const tempDisplay = document.getElementById('tempDisplay');
+    const mapFrame = document.getElementById('mapFrame');
+    const btnStart = document.getElementById('btnStart');
+
+    // 1. 單鍵連接體溫計
+    btnStart.addEventListener('click', async () => {
+      try {
+        statusDiv.textContent = '正在搜尋體溫計...';
+        const device = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: [SERVICE_UUID]
+        });
+
+        statusDiv.textContent = `正在連接 ${device.name || '體溫計'}...`;
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        const characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+        characteristic.addEventListener('characteristicvaluechanged', handleData);
+        await characteristic.startNotifications();
+
+        statusDiv.textContent = '監測站運作中，請對準額頭測量...';
+        btnStart.style.display = 'none'; // 連線成功後隱藏按鈕
+
+        device.addEventListener('gattserverdisconnected', () => {
+          statusDiv.textContent = '體溫計連線中斷，請重新連線';
+          btnStart.style.display = 'inline-block';
+          tempDisplay.style.color = '#ccc';
+        });
+
+      } catch (error) {
+        statusDiv.textContent = `連線失敗：${error.message}`;
+      }
+    });
+
+    // 2. 解碼體溫與超溫判定
+    function handleData(event) {
+      const bytes = new Uint8Array(event.target.value.buffer);
+      if (bytes.length >= 6 && bytes[0] === 0xAA && bytes[2] === 0xC1) {
+        const tempRaw = (bytes[4] << 8) | bytes[5];
+        const temp = tempRaw / 100.0;
+
+        if (temp >= 30.0 && temp <= 45.0) {
+          tempDisplay.textContent = temp.toFixed(1) + ' °C';
+
+          if (temp > 35.8) {
+            tempDisplay.style.color = '#d9534f';
+            triggerFeverResponse(); // 超過 37.8 度觸發動作
+          } else {
+            tempDisplay.style.color = '#28a745';
+          }
+        }
+      }
+    }
+
+    // 3. 自動觸發 ESP32 馬達轉動並載入地圖
+    function triggerFeverResponse() {
+      // (A) 切換介面至警報訊息與地圖
+      mainView.style.display = 'none';
+      alertView.style.display = 'block';
+
+      // (B) 背景自動向 ESP32 發出出貼指令 (無須任何點擊)
+      fetch(`http://${ESP32_IP}/drop`, { mode: 'no-cors' })
+        .then(() => console.log('已向 ESP32 送出出貼訊號'))
+        .catch(err => console.error('ESP32 連線錯誤:', err));
+
+      // (C) 獲取定位並搜尋醫院診所
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const lat = position.coords.latitude;
+            const lon = position.coords.longitude;
+            mapFrame.src = `https://maps.google.com/maps?q=醫院+診所&ll=${lat},${lon}&z=14&output=embed`;
+          },
+          () => {
+            // 定位未授權時載入通用搜尋
+            mapFrame.src = `https://maps.google.com/maps?q=醫院+診所&output=embed`;
+          }
+        );
+      }
+    }
+
+    // 4. 返回主畫面
+    document.getElementById('btnBack').addEventListener('click', () => {
+      alertView.style.display = 'none';
+      mainView.style.display = 'block';
+      tempDisplay.textContent = '--.- °C';
+      tempDisplay.style.color = '#ccc';
+      mapFrame.src = '';
+    });
+  </script>
+</body>
+</html>
