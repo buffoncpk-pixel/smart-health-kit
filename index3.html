@@ -102,8 +102,15 @@
       </div>
     </div>
 
-    <!-- 嵌入 Google 地圖 -->
-    <iframe id="mapFrame" src="" loading="lazy"></iframe>
+<!-- 地圖框架 (預設載入搜尋，避免空白) -->
+    <iframe id="mapFrame" src="https://maps.google.com/maps?q=醫院+診所&output=embed" loading="lazy"></iframe>
+
+    <!-- 雙保險按鈕：點擊直接開啟 Google 地圖 App -->
+    <div style="margin-top: 10px;">
+      <a id="btnOpenMapApp" href="https://www.google.com/maps/search/醫院+診所" target="_blank" class="btn" style="background-color: #28a745; text-decoration: none; display: inline-block;">
+        📍 在 Google 地圖 App 中開啟搜尋
+      </a>
+    </div>
 
     <div>
       <button class="btn btn-back" id="btnBack">返回主畫面</button>
@@ -177,28 +184,35 @@
       }
     }
 
-    // 3. 自動觸發 ESP32 馬達轉動並載入地圖
+// 3. 自動觸發 ESP32 馬達轉動並載入地圖 (加入超時防卡死)
     function triggerFeverResponse() {
-      // (A) 切換介面至警報訊息與地圖
       mainView.style.display = 'none';
       alertView.style.display = 'block';
 
-      // (B) 背景自動向 ESP32 發出出貼指令 (無須任何點擊)
+      // (A) 向 ESP32 送出出貼指令
       fetch(`http://${ESP32_IP}/drop`, { mode: 'no-cors' })
         .then(() => console.log('已向 ESP32 送出出貼訊號'))
         .catch(err => console.error('ESP32 連線錯誤:', err));
 
-      // (C) 獲取定位並搜尋醫院診所
+      // (B) 先載入通用地圖，避免白畫面
+      mapFrame.src = `https://maps.google.com/maps?q=醫院+診所&output=embed`;
+
+      // (C) 獲取定位並搜尋醫院診所 (5 秒逾時保護)
       if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
           (position) => {
             const lat = position.coords.latitude;
             const lon = position.coords.longitude;
             mapFrame.src = `https://maps.google.com/maps?q=醫院+診所&ll=${lat},${lon}&z=14&output=embed`;
+            document.getElementById('btnOpenMapApp').href = `https://www.google.com/maps/search/醫院+診所/@${lat},${lon},14z`;
           },
-          () => {
-            // 定位未授權時載入通用搜尋
-            mapFrame.src = `https://maps.google.com/maps?q=醫院+診所&output=embed`;
+          (error) => {
+            console.warn('定位超時或未授權，維持通用搜尋:', error.message);
+          },
+          {
+            enableHighAccuracy: false,
+            timeout: 5000,
+            maximumAge: 60000
           }
         );
       }
